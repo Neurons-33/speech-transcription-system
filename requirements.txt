@@ -1,0 +1,7 @@
+faster-whisper
+torch
+torchaudio
+pydub
+ffmpeg-python
+soundfile
+numpy
