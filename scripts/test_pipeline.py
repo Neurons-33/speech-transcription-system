@@ -1,5 +1,6 @@
 import argparse
 import time
+from typing import Any, Dict, List
 
 from pipeline.audio_preprocess import preprocess_audio
 from pipeline.vad import detect_speech_segments
@@ -8,18 +9,22 @@ from pipeline.asr import transcribe_segments_parallel_cpu
 from models.vad_model import load_vad_model
 
 from utils.file_utils import save_text, save_json, get_next_run_id, ensure_dir
+from utils.srt_utils import build_srt_from_chunks
 
 
 """
-V1 主入口（多人交談版 / CPU 平行 ASR）
+V1.1 主入口（多人交談版 / CPU 平行 ASR + SRT）
 重點：
 1. 保留時間戳
 2. 保留 chunk -> sub_segments 結構
-3. 讓 transcript 可作為後續上下文連結依據
-4. 只把 ASR 從單線改成 CPU 平行
+3. transcript JSON 升級為 file-level document
+4. 支援 TXT / Plain TXT / JSON / SRT 四種輸出
 """
 
 
+# =========================
+# Formatting helpers
+# =========================
 def format_timestamp(seconds: float) -> str:
     """
     將秒數轉成 HH:MM:SS.mmm
@@ -32,30 +37,66 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}.{ms:03d}"
 
 
-def build_plain_transcript(results: list) -> str:
+def get_display_text(seg: Dict[str, Any]) -> str:
+    """
+    顯示優先順序：
+    refined_text > normalized_text > raw_text
+    """
+    refined = (seg.get("refined_text") or "").strip()
+    if refined:
+        return refined
+
+    normalized = (seg.get("normalized_text") or "").strip()
+    if normalized:
+        return normalized
+
+    raw = (seg.get("raw_text") or "").strip()
+    return raw
+
+
+def get_display_speaker(seg: Dict[str, Any]) -> str | None:
+    """
+    speaker 顯示優先順序：
+    speaker_label > speaker_id
+    """
+    speaker_label = seg.get("speaker_label")
+    if speaker_label:
+        return speaker_label
+
+    speaker_id = seg.get("speaker_id")
+    if speaker_id:
+        return speaker_id
+
+    return None
+
+
+# =========================
+# Transcript builders
+# =========================
+def build_plain_transcript(chunks: List[Dict[str, Any]]) -> str:
     """
     純文字版本：
     只把所有 sub_segments text 串起來，適合快速看全文。
     """
     texts = []
 
-    for chunk in results:
+    for chunk in chunks:
         for seg in chunk.get("sub_segments", []):
-            text = seg.get("text", "").strip()
+            text = get_display_text(seg)
             if text:
                 texts.append(text)
 
     return " ".join(texts).strip()
 
 
-def build_timestamped_transcript(results: list) -> str:
+def build_timestamped_transcript(chunks: List[Dict[str, Any]]) -> str:
     """
     帶時間戳版本：
     保留每個 sub_segment 的時間範圍，方便回查原始音訊。
     """
     lines = []
 
-    for chunk in results:
+    for chunk in chunks:
         chunk_id = chunk.get("chunk_id")
         chunk_start = chunk.get("chunk_start", 0.0)
         chunk_end = chunk.get("chunk_end", 0.0)
@@ -72,8 +113,8 @@ def build_timestamped_transcript(results: list) -> str:
         for seg in chunk.get("sub_segments", []):
             start = seg.get("start", 0.0)
             end = seg.get("end", 0.0)
-            text = seg.get("text", "").strip()
-            speaker = seg.get("speaker", None)
+            text = get_display_text(seg)
+            speaker = get_display_speaker(seg)
 
             if not text:
                 continue
@@ -94,6 +135,43 @@ def build_timestamped_transcript(results: list) -> str:
     return "\n".join(lines).strip()
 
 
+def build_transcript_document(
+    *,
+    file_id: str,
+    source_audio: str,
+    processed_audio: str,
+    chunks: List[Dict[str, Any]],
+    language: str,
+    pipeline_version: str,
+    srt_exported: bool,
+) -> Dict[str, Any]:
+    """
+    建立 file-level transcript document
+    """
+    total_duration = 0.0
+    if chunks:
+        total_duration = max(chunk.get("chunk_end", 0.0) for chunk in chunks)
+
+    return {
+        "file_id": file_id,
+        "source_audio": source_audio,
+        "processed_audio": processed_audio,
+        "language": language,
+        "duration": round(total_duration, 3),
+        "pipeline_version": pipeline_version,
+        "processing": {
+            "asr_done": True,
+            "diarization_done": False,
+            "llm_refined": False,
+            "srt_exported": srt_exported,
+        },
+        "chunks": chunks,
+    }
+
+
+# =========================
+# Main
+# =========================
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=str, required=True, help="input audio path")
@@ -129,6 +207,7 @@ def main():
     txt_path = f"{transcript_dir}/{run_id}.txt"
     json_path = f"{transcript_dir}/{run_id}.json"
     plain_txt_path = f"{transcript_dir}/{run_id}_plain.txt"
+    srt_path = f"{transcript_dir}/{run_id}.srt"
 
     print(f"Run ID: {run_id}")
 
@@ -154,9 +233,13 @@ def main():
     elapsed = time.perf_counter() - t0
     print(f"done ({elapsed:.3f}s) | detected {len(speech_segments)} speech segments")
 
-    print(f"Running CPU Parallel ASR (workers={args.workers}, model={args.whisper_size}, beam={args.beam_size})...", end=" ")
+    print(
+        f"Running CPU Parallel ASR "
+        f"(workers={args.workers}, model={args.whisper_size}, beam={args.beam_size})...",
+        end=" "
+    )
     t0 = time.perf_counter()
-    results = transcribe_segments_parallel_cpu(
+    chunk_results = transcribe_segments_parallel_cpu(
         audio_path=processed_audio,
         segments=speech_segments,
         model_size=args.whisper_size,
@@ -175,14 +258,26 @@ def main():
     print(f"done ({time.perf_counter() - t0:.3f}s)")
 
     # 文字輸出
-    plain_transcript = build_plain_transcript(results)
-    timestamped_transcript = build_timestamped_transcript(results)
+    plain_transcript = build_plain_transcript(chunk_results)
+    timestamped_transcript = build_timestamped_transcript(chunk_results)
+    srt_text = build_srt_from_chunks(chunk_results)
+
+    transcript_doc = build_transcript_document(
+        file_id=run_id,
+        source_audio=input_audio,
+        processed_audio=processed_audio,
+        chunks=chunk_results,
+        language="zh",
+        pipeline_version="v1.1",
+        srt_exported=True,
+    )
 
     print("Saving outputs...", end=" ")
     t0 = time.perf_counter()
     save_text(timestamped_transcript, txt_path)
     save_text(plain_transcript, plain_txt_path)
-    save_json(results, json_path)
+    save_text(srt_text, srt_path)
+    save_json(transcript_doc, json_path)
     print(f"done ({time.perf_counter() - t0:.3f}s)")
 
     total_elapsed = time.perf_counter() - total_start
@@ -194,6 +289,7 @@ def main():
     print(f"\nSaved processed wav : {processed_audio}")
     print(f"Saved transcript txt: {txt_path}")
     print(f"Saved plain txt     : {plain_txt_path}")
+    print(f"Saved srt           : {srt_path}")
     print(f"Saved json          : {json_path}")
     print(f"Saved chunks dir    : {chunks_dir}")
 

@@ -1,17 +1,18 @@
-# Speech Transcription Pipeline（V1 - CPU Baseline）
+# Speech Transcription Pipeline（V1.1 - Structured ASR + SRT）
 
 一個以 Python 建立的語音轉錄處理流程（pipeline），  
-目前版本為 **CPU 可執行 baseline（V1）**，用於驗證完整語音處理流程。
+目前版本為 **結構化 ASR pipeline（V1.1）**，
+支援 JSON schema 與多格式輸出（TXT / SRT）。
 
 ---
 
 ## 專案狀態
 
 -  V1：CPU baseline（已完成）
--  V1.1：字幕輸出（SRT）（開發中）
--  V2：GPU 加速（規劃中）
--  V3：說話者分離（diarization）
--  V4：LLM 轉錄修正
+-  V1.1：結構化輸出 + SRT（已完成）
+-  V2：LLM 轉錄修正（規劃中）
+-  V3：GPU + FastAPI + Docker
+-  V4：說話者分離（diarization）
 
 ---
 
@@ -24,13 +25,14 @@
 - 音訊切段（chunk）
 - 語音轉文字（ASR）
 - 多格式輸出（JSON / TXT）
-- 可延伸支援字幕格式（SRT）
+- 字幕格式（SRT）
+- 可延伸支援 LLM / diarization / API
 
 並作為後續 GPU 與部署版本的基礎。
 
 ---
 
-## 目前功能（V1）
+## 目前功能（V1.1）
 
 ### 已完成
 
@@ -39,26 +41,80 @@
 - VAD 語音偵測 (Silero)
 - chunk 切段與時間對齊
 - CPU 平行 ASR (faster-whisper)
-- 逐字稿輸出（繁體中文）
-- JSON / TXT 雙格式輸出
+- 繁體中文轉換 （OpenCC）
+- 結構化 JSON 輸出（file-level schema）
+- TXT / Plain TXT / JSON / SRT 多格式輸出
 
 ---
 
 ## 輸出格式說明
 
-本專案輸出三種逐字稿格式：
+本專案輸出四種逐字稿格式：
 
-- `.json`（核心資料）
-  - 結構化語音資料（時間戳、chunk、sub-segment）
-  - 用於後續處理（LLM / diarization / embedding）
+### 1 `.json`（核心資料）
 
-- `.txt`（閱讀用）
-  - 人類可讀逐字稿
+- 結構化語音資料（file → chunk → segment）
+- 保留時間戳與 metadata
+- 支援未來：
+  - speaker diarization
+  - LLM refinement
+  - embedding / search
 
-- `.srt`（規劃中）
-  - 字幕格式（可用於影片 / 播放器）
+ **建議作為主資料來源**
 
-👉 建議以 `.json` 作為主要資料來源。
+---
+
+### 2 `.txt`（帶時間戳）
+
+- chunk + segment 可讀格式
+- 適合 debug / trace
+
+---
+
+### 3 `_plain.txt`
+
+- 純文字拼接
+- 適合快速閱讀
+
+---
+
+### 4 `.srt`（字幕）
+
+- 可直接用於影片 / 播放器
+- 支援時間對齊
+
+---
+
+## JSON Schema（核心設計）
+
+```json
+{
+  "file_id": "...",
+  "processing": {
+    "asr_done": true,
+    "diarization_done": false,
+    "llm_refined": false,
+    "srt_exported": true
+  },
+  "chunks": [
+    {
+      "chunk_id": 0,
+      "sub_segments": [
+        {
+          "raw_text": "...",
+          "normalized_text": "...",
+          "refined_text": null,
+          "speaker_id": null
+        }
+      ]
+    }
+  ]
+}
+```
+
+此 JSON schema 為整個系統的 **source of truth**，
+所有輸出格式（TXT / SRT）皆由此衍生，
+並作為未來 LLM、diarization 與 API 的核心資料結構。
 
 ---
 
@@ -76,20 +132,25 @@
 ├─ outputs/
 │   ├─ audio/                   # 預處理後音訊
 │   ├─ chunks/                  # 切段結果
-│   └─ transcripts/             # 逐字稿輸出
+│   └─ transcripts/             # JSON source + TXT / SRT views
 │
 ├─ pipeline/
 │   ├─ asr.py                   # chunk切分、ASR轉錄與文字過濾
 │   ├─ audio_preprocess.py      # 音訊前處理與格式標準化
-│   └─ vad.py                   # VAD偵測與語段合併
+│   └─ vad.py                   # VAD語音偵測
+│
+├─ services/                    # (future) LLM / refinement
+│
+├─ api/                         # (future) FastAPI entrypoint
 │
 ├─ scripts/
 │   └─ test_pipeline.py         # CLI測試入口
 │
 ├─ utils/
-│   ├─ audio_utils.py
-│   ├─ file_utils.py
-│   └─ text_utils.py
+│   ├─ audio_utils.py           # ffmpeg / audio處理
+│   ├─ file_utils.py            # File I/O / 路徑 / 儲存
+│   ├─ text_utils.py            # 基礎文字清理與正規化（rule-based）
+│   └─ srt_utils.py             # 字幕格式生成
 │
 ├─ requirements.txt
 └─ requirements.lock
@@ -104,6 +165,11 @@
 <p align="center">
   <img src="assets/pipeline.png" width="350">
 </p>
+本 pipeline 採用 **data-centric design**：
+
+- 每個階段皆為資料轉換（audio → segments → structured transcript）
+- JSON 為核心資料來源（source of truth）
+- TXT / SRT 為輸出視圖（views）
 
 ### TXT 逐字稿
 
@@ -115,6 +181,12 @@
 
 <p align="center">
   <img src="assets/sample_json.png">
+</p>
+
+### SRT 結構
+
+<p align="center">
+  <img src="assets/sample_srt.png">
 </p>
 
 ---
@@ -162,7 +234,7 @@ python -m scripts.test_pipeline \
 
 ---
 
-## 目前限制 (V1)
+## 目前限制 (V1.1)
 
 - 僅支援 CPU（速度有限）
 - 長音檔處理時間較長
