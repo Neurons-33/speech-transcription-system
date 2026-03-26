@@ -1,6 +1,10 @@
 venv/
+.venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 outputs/
 .env
+.env.*
 data/sample.m4a
+

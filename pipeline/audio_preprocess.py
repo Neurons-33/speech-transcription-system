@@ -3,14 +3,6 @@ import shutil
 import subprocess
 
 
-'''
-功能:
-
-轉 mono
-resample 到 16000 Hz
-輸出標準 wav
-
-'''
 SUPPORTED_AUDIO_EXTENSIONS = {
     ".wav",
     ".mp3",
@@ -23,36 +15,55 @@ SUPPORTED_AUDIO_EXTENSIONS = {
 
 
 def is_supported_audio_file(file_path: str) -> bool:
-    """
-    Check whether the input file extension is supported.
-    """
     ext = os.path.splitext(file_path)[1].lower()
     return ext in SUPPORTED_AUDIO_EXTENSIONS
 
 
 def check_ffmpeg_installed():
-    """
-    Ensure ffmpeg is available in the system PATH.
-    """
     if shutil.which("ffmpeg") is None:
         raise EnvironmentError(
-            "ffmpeg is not installed or not found in PATH. "
-            "Please install ffmpeg first."
+            "ffmpeg is not installed or not found in PATH."
         )
 
 
-def preprocess_audio(input_path: str, output_path: str) -> str:
+def build_audio_filters(
+    normalize: bool = True,
+    denoise: bool = False,
+) -> str:
     """
-    Convert input audio/video file into standard ASR-ready wav format.
+    Build ffmpeg audio filter chain.
 
-    Output format:
+    Order matters:
+    normalize → denoise
+    """
+
+    filters = []
+
+    if normalize:
+        # loudness normalization (關鍵)
+        filters.append("loudnorm")
+
+    if denoise:
+        # basic denoise (可換更高級)
+        filters.append("afftdn")
+
+    return ",".join(filters) if filters else None
+
+
+def preprocess_audio(
+    input_path: str,
+    output_path: str,
+    normalize: bool = True,
+    denoise: bool = False,
+) -> str:
+    """
+    Convert input audio/video file into ASR-ready wav.
+
+    Output:
     - wav
     - mono
     - 16kHz
     - PCM 16-bit
-
-    Supported input:
-    - wav, mp3, m4a, aac, ogg, flac, mp4
     """
 
     if not os.path.exists(input_path):
@@ -60,8 +71,8 @@ def preprocess_audio(input_path: str, output_path: str) -> str:
 
     if not is_supported_audio_file(input_path):
         raise ValueError(
-            f"Unsupported file format: {input_path}\n"
-            f"Supported formats: {sorted(SUPPORTED_AUDIO_EXTENSIONS)}"
+            f"Unsupported format: {input_path}\n"
+            f"Supported: {sorted(SUPPORTED_AUDIO_EXTENSIONS)}"
         )
 
     check_ffmpeg_installed()
@@ -70,14 +81,26 @@ def preprocess_audio(input_path: str, output_path: str) -> str:
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
+    # 🔥 build filter chain
+    audio_filters = build_audio_filters(
+        normalize=normalize,
+        denoise=denoise,
+    )
+
     command = [
         "ffmpeg",
-        "-y",                  # overwrite output
-        "-i", input_path,      # input file
-        "-vn",                 # ignore video stream if exists
+        "-y",
+        "-i", input_path,
+        "-vn",
+    ]
+
+    if audio_filters:
+        command += ["-af", audio_filters]
+
+    command += [
         "-acodec", "pcm_s16le",
-        "-ac", "1",            # mono
-        "-ar", "16000",        # 16kHz
+        "-ac", "1",
+        "-ar", "16000",
         output_path,
     ]
 
@@ -91,12 +114,10 @@ def preprocess_audio(input_path: str, output_path: str) -> str:
     if result.returncode != 0:
         raise RuntimeError(
             "Audio preprocessing failed.\n"
-            f"Input: {input_path}\n"
-            f"Output: {output_path}\n"
-            f"ffmpeg error:\n{result.stderr}"
+            f"{result.stderr}"
         )
 
     if not os.path.exists(output_path):
-        raise RuntimeError(f"Preprocessed file was not created: {output_path}")
+        raise RuntimeError(f"Output not created: {output_path}")
 
     return output_path

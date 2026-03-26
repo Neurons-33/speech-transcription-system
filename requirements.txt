@@ -5,3 +5,4 @@ pydub
 ffmpeg-python
 soundfile
 numpy
+pytest

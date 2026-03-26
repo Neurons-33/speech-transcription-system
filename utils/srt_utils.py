@@ -17,7 +17,7 @@ def format_srt_timestamp(seconds: float) -> str:
 def get_segment_display_text(seg: Dict[str, Any]) -> str:
     """
     顯示優先順序：
-    refined_text > normalized_text > raw_text
+    refined_text > normalized_text > raw_text > text
     """
     refined = (seg.get("refined_text") or "").strip()
     if refined:
@@ -28,7 +28,11 @@ def get_segment_display_text(seg: Dict[str, Any]) -> str:
         return normalized
 
     raw = (seg.get("raw_text") or "").strip()
-    return raw
+    if raw:
+        return raw
+
+    text = (seg.get("text") or "").strip()
+    return text
 
 
 def get_segment_display_speaker(seg: Dict[str, Any]) -> str | None:
