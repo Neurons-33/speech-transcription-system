@@ -7,6 +7,33 @@
 
 ---
 
+## V3版本線上 Demo
+
+可以直接體驗語音轉文字功能：
+
+https://neurons33-audio-demo.hf.space/
+
+查看 Demo 原始碼：
+
+https://github.com/Neurons-33/audio-demo
+
+---
+
+###  網頁介面
+
+<p align="center">
+  <img src="https://fengyun3999.sirv.com/html.png" width="720">
+</p>
+
+---
+### Demo 目前功能
+* 🎵 音檔上傳介面
+* 🧾 字幕（SRT）生成邏輯
+* 🖥️ 前端即時預覽
+* ☁️ Hugging Face 雲端部署
+* 🔌 Supabase 環境變數整合
+---
+
 ## 問題背景
 
 現有 ASR 模型在長音檔或口語語音中，  
@@ -23,7 +50,7 @@
 -  V1：CPU baseline（已完成）
 -  V1.1：結構化輸出 + SRT（已完成）
 -  V2：LLM 轉錄修正（已完成）
--  V3：GPU + FastAPI + Docker（規劃中）
+-  V3：UI + FastAPI + Docker（已完成）
 -  V4：說話者分離（diarization）
 
 ---
@@ -44,7 +71,7 @@
 
 ---
 
-## 目前功能（V2）
+## 目前功能（V2）Demo 僅作為UI展示
 
 ### 已完成
 
